@@ -13,7 +13,6 @@ import requests
 from bs4 import BeautifulSoup
 import aiohttp
 from dotenv import load_dotenv
-import markdown  # For fallback
 
 # Load environment variables
 load_dotenv()
@@ -124,30 +123,26 @@ def extract_references(response) -> List[str]:
                 references.extend(tool_call['args'].get('references', []))
     return [ref for ref in references if ref.startswith(('http://', 'https://'))]
 
-# Generate HTML with gemini-2.0-flash and markdown fallback
+# Generate HTML with gemini-2.0-flash
 def generate_html_from_analysis(analysis_text: str) -> str:
-    """Convert plain text analysis to HTML using gemini-2.0-flash with markdown fallback."""
-    try:
-        gemini_llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", max_retries=2)
-        prompt = f"""
-        Convert the following legal analysis text into a well-formatted HTML document suitable for a professional legal report. Use appropriate HTML tags:
-        - Use <h1> for the case name, <h2> for section headers, <p> for paragraphs.
-        - Use <strong> for bold text (replace **text** with <strong>text</strong>).
-        - Use <ul><li> for bullet points (replace - with <li> and group with <ul>).
-        - Ensure proper nesting and structure.
-        - Do not include external CSS or JavaScript; return pure HTML.
+    """Convert plain text analysis to HTML using gemini-2.0-flash."""
+    gemini_llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", max_retries=2)
+    prompt = f"""
+    Convert the following legal analysis text into a well-formatted HTML document suitable for a professional legal report. Use appropriate HTML tags:
+    - Use <h1> for the case name, <h2> for section headers, <p> for paragraphs.
+    - Use <strong> for bold text (replace **text** with <strong>text</strong>).
+    - Use <ul><li> for bullet points (replace - with <li> and group with <ul>).
+    - Ensure proper nesting and structure.
+    - Do not include external CSS or JavaScript; return pure HTML.
 
-        Text:
-        {analysis_text}
-        """
-        response = gemini_llm.invoke([HumanMessage(content=prompt)])
-        html_content = response.content.strip()
-        if html_content.startswith('<') and html_content.endswith('>'):
-            return html_content
-        return f"<div>{html_content}</div>"
-    except Exception as e:
-        print(f"Gemini failed with error: {e}. Falling back to markdown conversion.")
-        return markdown.markdown(analysis_text, extensions=['extra', 'fenced_code', 'tables'])
+    Text:
+    {analysis_text}
+    """
+    response = gemini_llm.invoke([HumanMessage(content=prompt)])
+    html_content = response.content.strip()
+    if html_content.startswith('<') and html_content.endswith('>'):
+        return html_content
+    return f"<div>{html_content}</div>"  # Fallback wrapper if Gemini returns plain text
 
 # Unified analysis endpoint
 @app.post("/analyze-case")
