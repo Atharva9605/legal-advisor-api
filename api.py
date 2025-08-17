@@ -1,7 +1,4 @@
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -16,7 +13,6 @@ from langchain_core.messages import HumanMessage
 import requests
 from bs4 import BeautifulSoup
 import aiohttp
-import aiofiles
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -33,10 +29,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Mount static files and templates
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
 
 # Request/Response models
 class LegalCaseRequest(BaseModel):
@@ -266,10 +258,20 @@ async def test_endpoint():
         "timestamp": datetime.now().isoformat()
     }
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def home(request: Request):
-    """Serve the main frontend interface"""
-    return templates.TemplateResponse("index.html", {"request": request})
+    """Serve the main API information"""
+    return {
+        "message": "Legal Advisor AI Agent API",
+        "description": "AI-powered legal analysis with step-by-step thinking and link summaries",
+        "endpoints": {
+            "POST /analyze-case": "Submit legal case for analysis",
+            "GET /analyze-case": "Test endpoint with query parameter",
+            "GET /api/health": "Health check",
+            "GET /docs": "API documentation"
+        },
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.get("/api/health")
 async def health_check():

@@ -1,7 +1,7 @@
 import json
 from typing import List, Dict, Any
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, HumanMessage
-from langchain_community.tools import TavilySearchResults
+from langchain_tavily import TavilySearchResults
 from dotenv import load_dotenv
 
 load_dotenv()
