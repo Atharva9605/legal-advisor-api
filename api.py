@@ -58,8 +58,18 @@ class LegalAnalysisResponse(BaseModel):
     total_steps: int
     processing_time: float
 
+class FormattedAnalysisResponse(BaseModel):
+    case_name: str
+    analysis_date: str
+    thinking_steps: List[ThinkingStep]
+    formatted_analysis: str
+    references: List[str]
+    link_summaries: List[LinkSummary]
+    total_steps: int
+    processing_time: float
+
 # Web scraping function for link summaries
-async def get_link_summary(url: str) -> LinkSummary:
+async def get_link_summary(url: str) -> Optional[LinkSummary]:
     """Extract title and summary from a webpage for tooltip display"""
     try:
         async with aiohttp.ClientSession() as session:
@@ -96,19 +106,11 @@ async def get_link_summary(url: str) -> LinkSummary:
                         status="success"
                     )
                 else:
-                    return LinkSummary(
-                        url=url,
-                        title="Error",
-                        summary=f"Failed to load page (Status: {response.status})",
-                        status="error"
-                    )
+                    # Return None for failed requests - will be filtered out
+                    return None
     except Exception as e:
-        return LinkSummary(
-            url=url,
-            title="Error",
-            summary=f"Failed to load page: {str(e)}",
-            status="error"
-        )
+        # Return None for any errors - will be filtered out
+        return None
 
 def extract_thinking_steps(response_messages) -> List[ThinkingStep]:
     """Extract thinking steps from the Langraph response"""
@@ -162,6 +164,39 @@ def extract_references(response_messages) -> List[str]:
     
     return list(set(references))  # Remove duplicates
 
+def format_legal_analysis(raw_analysis: str) -> str:
+    """Format the raw AI analysis into a properly structured legal document"""
+    if not raw_analysis:
+        return "Analysis not available"
+    
+    # Split the analysis into sections
+    sections = raw_analysis.split('\n\n')
+    formatted_sections = []
+    
+    for section in sections:
+        section = section.strip()
+        if not section:
+            continue
+            
+        # Check if this is a main section header
+        if re.match(r'^\d+\.\s+[A-Z][^:]*:', section):
+            # Main section header
+            formatted_sections.append(f"## {section}")
+        elif re.match(r'^[A-Z][^:]*:', section):
+            # Subsection header
+            formatted_sections.append(f"### {section}")
+        elif section.startswith('•') or section.startswith('-'):
+            # Bullet points
+            formatted_sections.append(f"  {section}")
+        elif re.match(r'^\d+\.\s+', section):
+            # Numbered lists
+            formatted_sections.append(f"  {section}")
+        else:
+            # Regular paragraph
+            formatted_sections.append(section)
+    
+    return '\n\n'.join(formatted_sections)
+
 @app.post("/analyze-case", response_model=LegalAnalysisResponse)
 async def analyze_legal_case(request: LegalCaseRequest):
     """Analyze a legal case using the AI agent"""
@@ -182,12 +217,16 @@ async def analyze_legal_case(request: LegalCaseRequest):
         if response and hasattr(response[-1], 'tool_calls') and response[-1].tool_calls:
             final_answer = response[-1].tool_calls[0]["args"].get("answer", "")
         
-        # Generate link summaries for tooltips
+        # Generate link summaries for tooltips - ONLY successful ones
         link_summaries = []
+        successful_references = []
+        
         for ref in references:
             if ref.startswith(('http://', 'https://')):
                 summary = await get_link_summary(ref)
-                link_summaries.append(summary)
+                if summary:  # Only include successful summaries
+                    link_summaries.append(summary)
+                    successful_references.append(ref)
         
         # Calculate processing time
         processing_time = (datetime.now() - start_time).total_seconds()
@@ -197,7 +236,58 @@ async def analyze_legal_case(request: LegalCaseRequest):
             analysis_date=datetime.now().isoformat(),
             thinking_steps=thinking_steps,
             final_answer=final_answer,
-            references=references,
+            references=successful_references,  # Only successful references
+            link_summaries=link_summaries,
+            total_steps=len(thinking_steps),
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+@app.post("/analyze-case-formatted", response_model=FormattedAnalysisResponse)
+async def analyze_legal_case_formatted(request: LegalCaseRequest):
+    """Analyze a legal case and return formatted analysis for separate page display"""
+    start_time = datetime.now()
+    
+    try:
+        # Invoke the Langraph agent
+        response = langraph_app.invoke(request.case_description)
+        
+        # Extract thinking steps
+        thinking_steps = extract_thinking_steps(response)
+        
+        # Extract references
+        references = extract_references(response)
+        
+        # Get final answer from the last message
+        final_answer = ""
+        if response and hasattr(response[-1], 'tool_calls') and response[-1].tool_calls:
+            final_answer = response[-1].tool_calls[0]["args"].get("answer", "")
+        
+        # Format the analysis for better display
+        formatted_analysis = format_legal_analysis(final_answer)
+        
+        # Generate link summaries for tooltips - ONLY successful ones
+        link_summaries = []
+        successful_references = []
+        
+        for ref in references:
+            if ref.startswith(('http://', 'https://')):
+                summary = await get_link_summary(ref)
+                if summary:  # Only include successful summaries
+                    link_summaries.append(summary)
+                    successful_references.append(ref)
+        
+        # Calculate processing time
+        processing_time = (datetime.now() - start_time).total_seconds()
+        
+        return FormattedAnalysisResponse(
+            case_name=f"Case Analysis - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            analysis_date=datetime.now().isoformat(),
+            thinking_steps=thinking_steps,
+            formatted_analysis=formatted_analysis,
+            references=successful_references,  # Only successful references
             link_summaries=link_summaries,
             total_steps=len(thinking_steps),
             processing_time=processing_time
@@ -251,6 +341,7 @@ async def test_endpoint():
         "message": "API is working!",
         "endpoints": {
             "POST /analyze-case": "Submit legal case for analysis",
+            "POST /analyze-case-formatted": "Get formatted analysis for separate page display",
             "GET /analyze-case": "Test endpoint with query parameter",
             "GET /api/health": "Health check",
             "GET /docs": "API documentation"
@@ -266,6 +357,7 @@ async def home(request: Request):
         "description": "AI-powered legal analysis with step-by-step thinking and link summaries",
         "endpoints": {
             "POST /analyze-case": "Submit legal case for analysis",
+            "POST /analyze-case-formatted": "Get formatted analysis for separate page display",
             "GET /analyze-case": "Test endpoint with query parameter",
             "GET /api/health": "Health check",
             "GET /docs": "API documentation"
