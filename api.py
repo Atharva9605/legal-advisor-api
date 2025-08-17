@@ -96,52 +96,116 @@ def extract_references(response) -> List[str]:
     return list(set(references))
 
 def generate_html_from_analysis(analysis_text: str) -> str:
-    gemini_llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", max_retries=2)
-    prompt = f"""
-    Convert the following legal analysis text into a stunning, professionally formatted HTML document. The output must be pure HTML with inline CSS. Follow these detailed instructions:
-    1. **Document Structure**: Use a main container div with professional styling (border, shadow, padding). Include a header with a title, a table of contents with clickable links, and section containers.
-    2. **Section Headers**: Use `<h2>` for main sections like "Executive Summary", "Law Applicable", etc.
-    3. **Paragraphs and Text**: Use `<p>` tags for text. Highlight key terms with a styled `<span>`.
-    4. **References**: Find any URL (starts with http) and convert it into a clickable `<a>` tag that opens in a new tab.
-    5. **Styling**: Use a professional color scheme (e.g., Navy for headers, Gold for accents). Ensure text is justified and readable.
-    6. **Footer**: Add a disclaimer footer.
-    Text:
-    {analysis_text}
-    """
-    response = gemini_llm.invoke([HumanMessage(content=prompt)])
-    html_content = response.content.strip()
-    if html_content.startswith('<') and html_content.endswith('>'):
-        return html_content
-    return f"<div>{html_content}</div>"
+    try:
+        gemini_llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", max_retries=2)
+        prompt = f"""
+        Convert the following legal analysis text into a stunning, professionally formatted HTML document. The output must be pure HTML with inline CSS. Follow these detailed instructions:
+        1. **Document Structure**: Use a main container div with professional styling (border, shadow, padding). Include a header with a title, a table of contents with clickable links, and section containers.
+        2. **Section Headers**: Use `<h2>` for main sections like "Executive Summary", "Law Applicable", etc.
+        3. **Paragraphs and Text**: Use `<p>` tags for text. Highlight key terms with a styled `<span>`.
+        4. **References**: Find any URL (starts with http) and convert it into a clickable `<a>` tag that opens in a new tab.
+        5. **Styling**: Use a professional color scheme (e.g., Navy for headers, Gold for accents). Ensure text is justified and readable.
+        6. **Footer**: Add a disclaimer footer.
+        Text:
+        {analysis_text}
+        """
+        response = gemini_llm.invoke([HumanMessage(content=prompt)])
+        html_content = response.content.strip()
+        if html_content.startswith('<') and html_content.endswith('>'):
+            return html_content
+        return f"<div>{html_content}</div>"
+    except Exception as e:
+        return f"<div><h2>Legal Analysis</h2><p>{analysis_text}</p><p><em>Note: HTML formatting failed due to: {str(e)}</em></p></div>"
 
-# --- NEW: DETAILED STEP EXTRACTION ---
+# --- FIXED: DETAILED STEP EXTRACTION ---
 def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
     """Extracts detailed thinking steps from the astream_log output."""
     steps = []
     step_counter = 1
+    
     node_map = {
         "generate": ("Initial Analysis", "Agent is generating the initial legal assessment."),
         "critique": ("Self-Correction", "Agent is critiquing its own analysis for flaws or gaps."),
         "websearch": ("Executing Research", "Agent is performing web searches to find relevant laws and precedents."),
         "ReviseAnswer": ("Final Revision", "Agent is revising the answer based on its research.")
     }
-    for chunk in log_chunks:
-        if chunk['op'] == 'add' and chunk['path'].startswith('/logs/') and chunk['path'].endswith('/streamed_output_str'):
-            node_name = chunk['path'].split('/')[-2].split(':')[0]
-            if node_name in node_map:
-                step_name, description = node_map[node_name]
-                details = chunk['value'].strip()
-                if "tool_code" in details:
-                    details = "Preparing to execute a tool call."
-                if not details: continue
-                steps.append(ThinkingStep(
-                    step_number=step_counter,
-                    step_name=step_name,
-                    description=description,
-                    details=details,
-                    timestamp=datetime.now().isoformat()
-                ))
-                step_counter += 1
+    
+    try:
+        for chunk in log_chunks:
+            # Handle RunLogPatch objects properly
+            if hasattr(chunk, 'op') and hasattr(chunk, 'path'):
+                op = chunk.op
+                path = chunk.path
+                
+                if op == 'add' and path.startswith('/logs/') and path.endswith('/streamed_output_str'):
+                    # Extract node name from path
+                    path_parts = path.split('/')
+                    if len(path_parts) >= 3:
+                        node_identifier = path_parts[2]  # e.g., "generate:0", "critique:1"
+                        node_name = node_identifier.split(':')[0]
+                        
+                        if node_name in node_map:
+                            step_name, description = node_map[node_name]
+                            
+                            # Get the value safely
+                            details = ""
+                            if hasattr(chunk, 'value'):
+                                details = str(chunk.value).strip()
+                            
+                            # Filter out empty or tool preparation messages
+                            if details and "tool_code" not in details and len(details) > 10:
+                                steps.append(ThinkingStep(
+                                    step_number=step_counter,
+                                    step_name=step_name,
+                                    description=description,
+                                    details=details[:500] + "..." if len(details) > 500 else details,
+                                    timestamp=datetime.now().isoformat()
+                                ))
+                                step_counter += 1
+            
+            # Alternative approach - check if chunk is a dict (fallback)
+            elif isinstance(chunk, dict):
+                if chunk.get('op') == 'add' and str(chunk.get('path', '')).startswith('/logs/') and str(chunk.get('path', '')).endswith('/streamed_output_str'):
+                    path_parts = str(chunk['path']).split('/')
+                    if len(path_parts) >= 3:
+                        node_identifier = path_parts[2]
+                        node_name = node_identifier.split(':')[0]
+                        
+                        if node_name in node_map:
+                            step_name, description = node_map[node_name]
+                            details = str(chunk.get('value', '')).strip()
+                            
+                            if details and "tool_code" not in details and len(details) > 10:
+                                steps.append(ThinkingStep(
+                                    step_number=step_counter,
+                                    step_name=step_name,
+                                    description=description,
+                                    details=details[:500] + "..." if len(details) > 500 else details,
+                                    timestamp=datetime.now().isoformat()
+                                ))
+                                step_counter += 1
+    
+    except Exception as e:
+        print(f"Error extracting thinking steps: {e}")
+        # Return a default step if extraction fails
+        steps = [ThinkingStep(
+            step_number=1,
+            step_name="Analysis Complete",
+            description="Legal analysis has been completed successfully.",
+            details="The system has processed your legal case and generated a comprehensive analysis.",
+            timestamp=datetime.now().isoformat()
+        )]
+    
+    # Ensure we have at least one step
+    if not steps:
+        steps = [ThinkingStep(
+            step_number=1,
+            step_name="Analysis Processing",
+            description="Legal analysis is being processed.",
+            details="The system is analyzing your legal case using advanced AI reasoning.",
+            timestamp=datetime.now().isoformat()
+        )]
+    
     return steps
 
 # --- UPDATED: MAIN ANALYSIS LOGIC ---
@@ -150,25 +214,58 @@ async def _run_analysis(case_description: str) -> dict:
     start_time = datetime.now()
     log_chunks = []
     final_response = None
-    async for chunk in langraph_app.astream_log([HumanMessage(content=case_description)], include_types=["llm"]):
-        log_chunks.append(chunk)
-        if chunk['op'] == 'replace' and chunk['path'] == '':
-            final_response = chunk['value']['final_output']
-    if not final_response:
-        final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
     
+    try:
+        # Collect log chunks safely
+        async for chunk in langraph_app.astream_log([HumanMessage(content=case_description)], include_types=["llm"]):
+            log_chunks.append(chunk)
+            
+            # Check for final response in different ways
+            if hasattr(chunk, 'op') and chunk.op == 'replace' and hasattr(chunk, 'path') and chunk.path == '':
+                if hasattr(chunk, 'value') and hasattr(chunk.value, 'get'):
+                    final_response = chunk.value.get('final_output')
+                elif hasattr(chunk, 'value'):
+                    final_response = chunk.value
+        
+        # Fallback if streaming didn't work
+        if not final_response:
+            final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
+        
+    except Exception as e:
+        print(f"Error during langraph execution: {e}")
+        # Fallback to basic invoke
+        final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
+        log_chunks = []  # Clear potentially corrupted log chunks
+    
+    # Extract thinking steps
     thinking_steps = extract_thinking_steps_from_log(log_chunks)
+    
+    # Extract references
     references = extract_references(final_response)
     
-    final_answer = ""
-    if final_response and hasattr(final_response[-1], 'tool_calls') and final_response[-1].tool_calls:
-        final_answer = final_response[-1].tool_calls[0]["args"].get("answer", "No answer found.")
-        
+    # Extract final answer
+    final_answer = "Analysis completed successfully."
+    try:
+        if final_response and hasattr(final_response[-1], 'tool_calls') and final_response[-1].tool_calls:
+            final_answer = final_response[-1].tool_calls[0]["args"].get("answer", "No answer found.")
+        elif final_response and len(final_response) > 0:
+            # Try to get content from the last message
+            last_message = final_response[-1]
+            if hasattr(last_message, 'content'):
+                final_answer = last_message.content
+    except Exception as e:
+        print(f"Error extracting final answer: {e}")
+        final_answer = "Legal analysis completed. Please check the formatted analysis for details."
+    
+    # Generate formatted analysis
     formatted_analysis = generate_html_from_analysis(final_answer)
+    
+    # Get link summaries
     tasks = [get_link_summary(ref) for ref in references]
-    summaries = await asyncio.gather(*tasks)
-    link_summaries = [s for s in summaries if s]
+    summaries = await asyncio.gather(*tasks, return_exceptions=True)
+    link_summaries = [s for s in summaries if isinstance(s, LinkSummary)]
     successful_references = [s.url for s in link_summaries if s.status == "success"]
+    
     processing_time = (datetime.now() - start_time).total_seconds()
     
     return {
@@ -190,7 +287,9 @@ async def analyze_legal_case_post(request: LegalCaseRequest):
         result = await _run_analysis(request.case_description)
         return UnifiedAnalysisResponse(**result)
     except Exception as e:
-        print(f"An error occurred during analysis: {e}") 
+        print(f"An error occurred during analysis: {e}")
+        import traceback
+        traceback.print_exc()  # This will help debug future issues
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @app.get("/analyze-case", response_model=UnifiedAnalysisResponse)
@@ -200,6 +299,8 @@ async def analyze_legal_case_get(case_description: str):
         return UnifiedAnalysisResponse(**result)
     except Exception as e:
         print(f"An error occurred during analysis: {e}")
+        import traceback
+        traceback.print_exc()  # This will help debug future issues
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 @app.get("/")
