@@ -1,13 +1,19 @@
 import json
 from typing import List, Dict, Any
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, HumanMessage
-from langchain_tavily import TavilySearchResults
+from langchain_tavily import TavilySearch
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Create the Tavily search tool
-tavily_tool = TavilySearchResults(max_results=5)
+# Configure TavilySearch with proper parameters based on documentation
+tavily_tool = TavilySearch(
+    max_results=5,
+    topic="general",
+    # Additional parameters for better search results
+    search_depth="advanced",
+    time_range="week"
+)
 
 # Function to execute search queries from AnswerQuestion tool calls
 def execute_tools(state: List[BaseMessage]) -> List[BaseMessage]:
@@ -28,8 +34,11 @@ def execute_tools(state: List[BaseMessage]) -> List[BaseMessage]:
             # Execute each search query using the tavily tool
             query_results = {}
             for query in search_queries:
-                result = tavily_tool.invoke(query)
-                query_results[query] = result
+                try:
+                    result = tavily_tool.invoke(query)
+                    query_results[query] = result
+                except Exception as e:
+                    query_results[query] = {"error": f"Search failed: {str(e)}"}
             
             # Create a tool message with the results
             tool_messages.append(
