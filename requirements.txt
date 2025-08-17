@@ -13,3 +13,4 @@ beautifulsoup4
 lxml
 python-multipart
 aiohttp
+python-markdown
