@@ -13,7 +13,7 @@ import requests
 from bs4 import BeautifulSoup
 import aiohttp
 from dotenv import load_dotenv
-import markdown  # Added for fallback
+import markdown  # For fallback
 
 # Load environment variables
 load_dotenv()
@@ -52,20 +52,11 @@ class ThinkingStep(BaseModel):
     details: str
     timestamp: str
 
-class LegalAnalysisResponse(BaseModel):
+class UnifiedAnalysisResponse(BaseModel):
     case_name: str
     analysis_date: str
     thinking_steps: List[ThinkingStep]
     final_answer: str
-    references: List[str]
-    link_summaries: List[LinkSummary]
-    total_steps: int
-    processing_time: float
-
-class FormattedAnalysisResponse(BaseModel):
-    case_name: str
-    analysis_date: str
-    thinking_steps: List[ThinkingStep]
     formatted_analysis: str
     references: List[str]
     link_summaries: List[LinkSummary]
@@ -158,16 +149,34 @@ def generate_html_from_analysis(analysis_text: str) -> str:
         print(f"Gemini failed with error: {e}. Falling back to markdown conversion.")
         return markdown.markdown(analysis_text, extensions=['extra', 'fenced_code', 'tables'])
 
-# Main analysis endpoint
+# Unified analysis endpoint
 @app.post("/analyze-case")
-async def analyze_legal_case(request: LegalCaseRequest):
+@app.get("/analyze-case")
+async def analyze_legal_case(request: LegalCaseRequest = None, case_description: str = "Test case for API verification"):
     start_time = datetime.now()
     try:
-        response = langraph_app.invoke([HumanMessage(content=request.case_description)])
+        # Determine case description based on request type
+        if request:
+            desc = request.case_description
+        else:
+            desc = case_description
+
+        # Invoke the Langraph agent
+        response = langraph_app.invoke([HumanMessage(content=desc)])
+        
+        # Extract thinking steps and references
         thinking_steps = extract_thinking_steps(response)
         references = extract_references(response)
-        final_answer = response[-1].tool_calls[0]["args"].get("answer", "") if response and hasattr(response[-1], 'tool_calls') else ""
+        
+        # Get final answer from the last message
+        final_answer = ""
+        if response and hasattr(response[-1], 'tool_calls') and response[-1].tool_calls:
+            final_answer = response[-1].tool_calls[0]["args"].get("answer", "")
+        
+        # Generate HTML-formatted analysis
         formatted_analysis = generate_html_from_analysis(final_answer)
+        
+        # Generate link summaries for successful references
         link_summaries = []
         successful_references = []
         tasks = [get_link_summary(ref) for ref in references if ref.startswith(('http://', 'https://'))]
@@ -176,43 +185,14 @@ async def analyze_legal_case(request: LegalCaseRequest):
             if summary:
                 link_summaries.append(summary)
                 successful_references.append(summary.url)
+        
         processing_time = (datetime.now() - start_time).total_seconds()
-        return LegalAnalysisResponse(
+        
+        return UnifiedAnalysisResponse(
             case_name=f"Case Analysis - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             analysis_date=datetime.now().isoformat(),
             thinking_steps=thinking_steps,
             final_answer=final_answer,
-            references=successful_references,
-            link_summaries=link_summaries,
-            total_steps=len(thinking_steps),
-            processing_time=processing_time
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
-
-# Formatted analysis endpoint
-@app.post("/analyze-case-formatted")
-async def analyze_legal_case_formatted(request: LegalCaseRequest):
-    start_time = datetime.now()
-    try:
-        response = langraph_app.invoke([HumanMessage(content=request.case_description)])
-        thinking_steps = extract_thinking_steps(response)
-        references = extract_references(response)
-        final_answer = response[-1].tool_calls[0]["args"].get("answer", "") if response and hasattr(response[-1], 'tool_calls') else ""
-        formatted_analysis = generate_html_from_analysis(final_answer)
-        link_summaries = []
-        successful_references = []
-        tasks = [get_link_summary(ref) for ref in references if ref.startswith(('http://', 'https://'))]
-        summaries = await asyncio.gather(*tasks)
-        for summary in summaries:
-            if summary:
-                link_summaries.append(summary)
-                successful_references.append(summary.url)
-        processing_time = (datetime.now() - start_time).total_seconds()
-        return FormattedAnalysisResponse(
-            case_name=f"Case Analysis - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            analysis_date=datetime.now().isoformat(),
-            thinking_steps=thinking_steps,
             formatted_analysis=formatted_analysis,
             references=successful_references,
             link_summaries=link_summaries,
@@ -223,30 +203,12 @@ async def analyze_legal_case_formatted(request: LegalCaseRequest):
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
 # Other endpoints
-@app.get("/analyze-case")
-async def analyze_legal_case_get(case_description: str = "Test case for API verification"):
-    request = LegalCaseRequest(case_description=case_description)
-    start_time = datetime.now()
-    response = langraph_app.invoke(request.case_description)
-    thinking_steps = extract_thinking_steps(response)
-    references = extract_references(response)
-    final_answer = response[-1].tool_calls[0]["args"].get("answer", "") if response and hasattr(response[-1], 'tool_calls') else ""
-    processing_time = (datetime.now() - start_time).total_seconds()
-    return {
-        "message": "GET endpoint working - use POST for full functionality",
-        "case_description": case_description,
-        "final_answer_preview": final_answer[:200] + "..." if len(final_answer) > 200 else final_answer,
-        "processing_time": processing_time,
-        "note": "This is a test endpoint. Use POST /analyze-case with JSON body for full analysis."
-    }
-
 @app.get("/test")
 async def test_endpoint():
     return {
         "message": "API is working!",
         "endpoints": {
-            "POST /analyze-case": "Submit legal case for analysis",
-            "POST /analyze-case-formatted": "Get formatted analysis for separate page display",
+            "POST /analyze-case": "Submit legal case for analysis (returns both raw and formatted analysis)",
             "GET /analyze-case": "Test endpoint with query parameter",
             "GET /api/health": "Health check",
             "GET /docs": "API documentation"
@@ -260,8 +222,7 @@ async def home(request: Request):
         "message": "Legal Advisor AI Agent API",
         "description": "AI-powered legal analysis with step-by-step thinking and link summaries",
         "endpoints": {
-            "POST /analyze-case": "Submit legal case for analysis",
-            "POST /analyze-case-formatted": "Get formatted analysis for separate page display",
+            "POST /analyze-case": "Submit legal case for analysis (returns both raw and formatted analysis)",
             "GET /analyze-case": "Test endpoint with query parameter",
             "GET /api/health": "Health check",
             "GET /docs": "API documentation"
@@ -273,7 +234,7 @@ async def home(request: Request):
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
-@app.get("/debug")  # Added for debugging
+@app.get("/debug")
 async def debug():
     return {"message": "API is running", "endpoints": [route.path for route in app.routes]}
 
