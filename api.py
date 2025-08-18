@@ -22,7 +22,7 @@ load_dotenv()
 app = FastAPI(
     title="Legal Advisor AI Agent API",
     description="AI-powered legal analysis with step-by-step thinking and link summaries",
-    version="1.3.4"  # Updated version to reflect fixes
+    version="1.4.0"  # Updated version to reflect enhanced step tracking
 )
 
 # Add CORS middleware
@@ -196,18 +196,38 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
     step_counter = 1
     
     node_map = {
-        "generate": ("🧠 Initial Legal Analysis", "Analyzing case facts and identifying key legal issues"),
-        "critique": ("🔍 Critical Review", "Reviewing analysis for gaps, inconsistencies, and areas needing research"),
-        "websearch": ("🔎 Legal Research", "Searching for relevant laws, precedents, and legal authorities"),
-        "ReviseAnswer": ("✅ Final Synthesis", "Incorporating research findings and finalizing legal opinion"),
-        "AnswerQuestion": ("📝 Answer Formulation", "Structuring the comprehensive legal analysis"),
-        "research": ("📚 Research Phase", "Conducting detailed legal research"),
-        "analyze": ("⚖️ Legal Analysis", "Applying legal principles to case facts")
+        "draft": ("🧠 Initial Legal Analysis", "Analyzing case facts and identifying key legal issues"),
+        "execute_tools": ("🔎 Legal Research Execution", "Running comprehensive legal database searches"),
+        "revisor": ("✅ Legal Review & Synthesis", "Reviewing analysis and incorporating research findings"),
+        "ReviseAnswer": ("📝 Final Legal Opinion", "Structuring comprehensive legal analysis"),
+        "AnswerQuestion": ("📋 Legal Assessment", "Formulating detailed legal recommendations"),
+        "websearch": ("🔍 Legal Database Search", "Searching for relevant laws and precedents"),
+        "generate": ("⚖️ Legal Analysis", "Applying legal principles to case facts"),
+        "critique": ("🔍 Critical Review", "Reviewing analysis for gaps and inconsistencies")
     }
     
     try:
         current_node = None
         accumulated_content = ""
+        
+        # Get search progress for additional steps
+        try:
+            from execute_tools import get_search_progress
+            search_progress = get_search_progress()
+            
+            # Add search query steps
+            if search_progress.get("step_details"):
+                for search_step in search_progress["step_details"]:
+                    steps.append(ThinkingStep(
+                        step_number=step_counter,
+                        step_name=search_step["step_name"],
+                        description=search_step["description"],
+                        details=search_step["details"],
+                        timestamp=search_step["timestamp"]
+                    ))
+                    step_counter += 1
+        except ImportError:
+            print("Warning: Could not import search progress functions")
         
         for chunk in log_chunks:
             try:
@@ -233,7 +253,7 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
                     
                     if content and len(content) > 20 and not content.startswith('{'):
                         path_parts = path.split('/')
-                        node_name = "analyze"
+                        node_name = "draft"
                         
                         for part in path_parts:
                             if ':' in part:
@@ -241,6 +261,9 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
                                 if potential_node in node_map:
                                     node_name = potential_node
                                     break
+                            elif part in node_map:
+                                node_name = part
+                                break
                         
                         if node_name != current_node and accumulated_content:
                             step_name, description = node_map.get(current_node, (f"Legal Step {current_node}", "Processing legal analysis"))
@@ -274,6 +297,7 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
     except Exception as e:
         print(f"Error extracting thinking steps: {e}")
     
+    # Ensure we have at least some steps
     if not steps:
         steps = [
             ThinkingStep(
@@ -300,6 +324,13 @@ async def _run_analysis(case_description: str) -> dict:
     start_time = datetime.now()
     log_chunks = []
     final_response = None
+    
+    # Reset search progress tracking
+    try:
+        from execute_tools import reset_search_progress
+        reset_search_progress()
+    except ImportError:
+        print("Warning: Could not import search progress functions")
     
     try:
         async for chunk in langraph_app.astream_log([HumanMessage(content=case_description)], include_types=["llm"]):
@@ -388,16 +419,45 @@ async def home():
     """Root endpoint - API information"""
     return {
         "message": "Legal Advisor AI Agent API",
-        "version": "1.3.4",
+        "version": "1.4.0",
         "endpoints": {
             "analyze_case_post": "POST /analyze-case",
             "analyze_case_get": "GET /analyze-case?case_description=...",
             "analyze_case_stream": "POST /analyze-case-stream (Server-Sent Events)",
+            "search_progress": "GET /search-progress",
             "health_check": "GET /api/health",
             "documentation": "GET /docs"
         },
         "documentation": "/docs"
     }
+
+@app.get("/api/health", response_description="Health check")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "Legal Advisor AI Agent API",
+        "version": "1.4.0"
+    }
+
+@app.post("/analyze-case", response_model=UnifiedAnalysisResponse, response_description="Analyze a legal case (POST)")
+async def analyze_legal_case_post(request: LegalCaseRequest):
+    """Main analysis endpoint - POST method with full response"""
+    if not request.case_description or len(request.case_description.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Case description must be at least 50 characters long")
+    
+    result = await _run_analysis(request.case_description)
+    return UnifiedAnalysisResponse(**result)
+
+@app.get("/analyze-case", response_model=UnifiedAnalysisResponse, response_description="Analyze a legal case (GET)")
+async def analyze_legal_case_get(case_description: str):
+    """Analysis endpoint - GET method for simple queries"""
+    if not case_description or len(case_description.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Case description must be at least 50 characters long")
+    
+    result = await _run_analysis(case_description)
+    return UnifiedAnalysisResponse(**result)
 
 @app.post("/analyze-case-stream", response_description="Stream legal case analysis")
 async def analyze_legal_case_stream(request: LegalCaseRequest):
@@ -410,8 +470,13 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                 return
             
             # Reset search progress tracking
-            from execute_tools import reset_search_progress, get_search_progress
-            reset_search_progress()
+            try:
+                from execute_tools import reset_search_progress, get_search_progress
+                reset_search_progress()
+            except ImportError:
+                print("Warning: Could not import search progress functions")
+                def get_search_progress():
+                    return {"step_details": [], "total_queries": 0}
             
             yield f"data: {json.dumps({'type': 'start', 'message': 'Legal analysis initiated...', 'timestamp': datetime.now().isoformat()})}\n\n"
             
@@ -439,6 +504,18 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                         # New search steps detected
                         for i in range(last_search_step_count, len(search_progress["step_details"])):
                             search_step = search_progress["step_details"][i]
+                            
+                            # Send step start first
+                            start_data = {
+                                'type': 'step_start',
+                                'step_number': step_counter,
+                                'step_name': search_step["step_name"],
+                                'description': search_step["description"],
+                                'timestamp': search_step["timestamp"]
+                            }
+                            yield f"data: {json.dumps(start_data)}\n\n"
+                            
+                            # Then send completion
                             search_step_data = {
                                 'type': 'step_complete',
                                 'step_number': step_counter,
@@ -477,8 +554,8 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                             start_data = {
                                 'type': 'step_start',
                                 'step_number': step_counter,
-                                'step_name': "🔎 Executing Legal Research",
-                                'description': "Running comprehensive legal database searches",
+                                'step_name': "🔎 Legal Research Execution",
+                                'description': "Initiating comprehensive legal database searches",
                                 'timestamp': datetime.now().isoformat()
                             }
                             yield f"data: {json.dumps(start_data)}\n\n"
@@ -489,7 +566,7 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                         
                         if content and len(content) > 20:
                             path_parts = path.split('/')
-                            node_name = "analyze"
+                            node_name = "draft"
                             
                             for part in path_parts:
                                 if ':' in part:
@@ -497,6 +574,9 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                                     if potential_node in node_map:
                                         node_name = potential_node
                                         break
+                                elif part in node_map:
+                                    node_name = part
+                                    break
                             
                             if node_name != current_node:
                                 if current_node and accumulated_content and current_node != 'execute_tools':
@@ -593,175 +673,14 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
         }
     )
 
-# Add a new endpoint to get search progress
 @app.get("/search-progress", response_description="Get current search progress")
 async def get_current_search_progress():
     """Get the current search progress for debugging"""
-    from execute_tools import get_search_progress
-    return get_search_progress()
-@app.get("/api/health", response_description="Health check")
-async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "service": "Legal Advisor AI Agent API",
-        "version": "1.3.4"
-    }
-
-@app.post("/analyze-case", response_model=UnifiedAnalysisResponse, response_description="Analyze a legal case (POST)")
-async def analyze_legal_case_post(request: LegalCaseRequest):
-    """Main analysis endpoint - POST method with full response"""
-    if not request.case_description or len(request.case_description.strip()) < 50:
-        raise HTTPException(status_code=400, detail="Case description must be at least 50 characters long")
-    
-    result = await _run_analysis(request.case_description)
-    return UnifiedAnalysisResponse(**result)
-
-@app.get("/analyze-case", response_model=UnifiedAnalysisResponse, response_description="Analyze a legal case (GET)")
-async def analyze_legal_case_get(case_description: str):
-    """Analysis endpoint - GET method for simple queries"""
-    if not case_description or len(case_description.strip()) < 50:
-        raise HTTPException(status_code=400, detail="Case description must be at least 50 characters long")
-    
-    result = await _run_analysis(case_description)
-    return UnifiedAnalysisResponse(**result)
-
-@app.post("/analyze-case-stream", response_description="Stream legal case analysis")
-async def analyze_legal_case_stream(request: LegalCaseRequest):
-    """Streaming analysis endpoint - Real-time thinking process via Server-Sent Events"""
-    
-    async def generate_thinking_stream():
-        try:
-            if not request.case_description or len(request.case_description.strip()) < 50:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Case description must be at least 50 characters long'})}\n\n"
-                return
-            
-            yield f"data: {json.dumps({'type': 'start', 'message': 'Legal analysis initiated...', 'timestamp': datetime.now().isoformat()})}\n\n"
-            
-            step_counter = 1
-            node_map = {
-                "generate": ("🧠 Initial Legal Analysis", "Analyzing case facts and identifying key legal issues"),
-                "critique": ("🔍 Critical Review", "Reviewing analysis for gaps and inconsistencies"),
-                "websearch": ("🔎 Legal Research", "Searching for relevant laws and precedents"),
-                "ReviseAnswer": ("✅ Final Synthesis", "Incorporating research and finalizing opinion"),
-                "AnswerQuestion": ("📝 Answer Formulation", "Structuring comprehensive legal analysis"),
-                "research": ("📚 Research Phase", "Conducting detailed legal research"),
-                "analyze": ("⚖️ Legal Analysis", "Applying legal principles to case facts")
-            }
-            
-            current_node = None
-            accumulated_content = ""
-            
-            async for chunk in langraph_app.astream_log([HumanMessage(content=request.case_description)], include_types=["llm"]):
-                try:
-                    chunk_data = {}
-                    
-                    if hasattr(chunk, 'op') and hasattr(chunk, 'path') and hasattr(chunk, 'value'):
-                        chunk_data = {
-                            'op': chunk.op,
-                            'path': chunk.path,
-                            'value': chunk.value
-                        }
-                    elif isinstance(chunk, dict):
-                        chunk_data = chunk
-                    else:
-                        continue
-                    
-                    op = chunk_data.get('op')
-                    path = str(chunk_data.get('path', ''))
-                    value = chunk_data.get('value', '')
-                    
-                    if op == 'add' and any(keyword in path for keyword in ['/streamed_output', '/llm', '/output']):
-                        content = str(value).strip() if not isinstance(value, Exception) else f"Error: {str(value)}"
-                        
-                        if content and len(content) > 20:
-                            path_parts = path.split('/')
-                            node_name = "analyze"
-                            
-                            for part in path_parts:
-                                if ':' in part:
-                                    potential_node = part.split(':')[0]
-                                    if potential_node in node_map:
-                                        node_name = potential_node
-                                        break
-                            
-                            if node_name != current_node:
-                                if current_node and accumulated_content:
-                                    prev_step_name, prev_description = node_map.get(current_node, (f"Step {current_node}", "Processing..."))
-                                    step_data = {
-                                        'type': 'step_complete',
-                                        'step_number': step_counter,
-                                        'step_name': prev_step_name,
-                                        'description': prev_description,
-                                        'details': accumulated_content[:1200] + "..." if len(accumulated_content) > 1200 else accumulated_content,
-                                        'timestamp': datetime.now().isoformat()
-                                    }
-                                    yield f"data: {json.dumps(step_data)}\n\n"
-                                    step_counter += 1
-                                
-                                current_node = node_name
-                                accumulated_content = content
-                                
-                                step_name, description = node_map.get(node_name, (f"Step {node_name}", "Processing..."))
-                                start_data = {
-                                    'type': 'step_start',
-                                    'step_number': step_counter,
-                                    'step_name': step_name,
-                                    'description': description,
-                                    'timestamp': datetime.now().isoformat()
-                                }
-                                yield f"data: {json.dumps(start_data)}\n\n"
-                            else:
-                                accumulated_content += "\n" + content
-                                
-                                if len(content) > 50:
-                                    update_data = {
-                                        'type': 'thinking_update',
-                                        'content': content[:600] + "..." if len(content) > 600 else content,
-                                        'timestamp': datetime.now().isoformat()
-                                    }
-                                    yield f"data: {json.dumps(update_data)}\n\n"
-                
-                except Exception as chunk_error:
-                    print(f"Error processing stream chunk: {chunk_error}")
-                    continue
-            
-            if current_node and accumulated_content:
-                final_step_name, final_description = node_map.get(current_node, ("Final Analysis", "Completing analysis..."))
-                final_step_data = {
-                    'type': 'step_complete',
-                    'step_number': step_counter,
-                    'step_name': final_step_name,
-                    'description': final_description,
-                    'details': accumulated_content[:1200] + "..." if len(accumulated_content) > 1200 else accumulated_content,
-                    'timestamp': datetime.now().isoformat()
-                }
-                yield f"data: {json.dumps(final_step_data)}\n\n"
-            
-            yield f"data: {json.dumps({'type': 'complete', 'message': 'Legal analysis completed successfully!', 'timestamp': datetime.now().isoformat()})}\n\n"
-            
-        except Exception as e:
-            print(f"Streaming error: {e}")
-            traceback.print_exc()
-            error_data = {
-                'type': 'error',
-                'message': f'Analysis error: An internal server error occurred.',
-                'timestamp': datetime.now().isoformat()
-            }
-            yield f"data: {json.dumps(error_data)}\n\n"
-    
-    return StreamingResponse(
-        generate_thinking_stream(),
-        media_type="text/plain",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Headers": "*",
-            "X-Accel-Buffering": "no"
-        }
-    )
+    try:
+        from execute_tools import get_search_progress
+        return get_search_progress()
+    except ImportError:
+        return {"error": "Search progress tracking not available", "step_details": [], "total_queries": 0}
 
 if __name__ == "__main__":
     import uvicorn
