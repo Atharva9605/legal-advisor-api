@@ -13,6 +13,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import traceback
+import re
 
 # Load environment variables
 load_dotenv()
@@ -21,7 +22,7 @@ load_dotenv()
 app = FastAPI(
     title="Legal Advisor AI Agent API",
     description="AI-powered legal analysis with step-by-step thinking and link summaries",
-    version="1.3.3"  # Updated version to reflect stability improvements
+    version="1.3.4"  # Updated version to reflect fixes
 )
 
 # Add CORS middleware
@@ -32,6 +33,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catches all unhandled exceptions and returns a clean, serializable JSON response."""
+    print(f"Unhandled error: {str(exc)}")
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected server error occurred."}
+    )
 
 # --- Pydantic Models ---
 class LegalCaseRequest(BaseModel):
@@ -97,21 +109,23 @@ def extract_references(response) -> List[str]:
     """Extract HTTP references from the response"""
     references = []
     try:
-        if response and hasattr(response[-1], 'tool_calls') and response[-1].tool_calls:
-            final_tool_call = response[-1].tool_calls[0]
-            if final_tool_call['name'] in ['AnswerQuestion', 'ReviseAnswer']:
-                refs = final_tool_call['args'].get('references', [])
-                if isinstance(refs, list):
-                    references.extend(ref for ref in refs if ref and isinstance(ref, str) and ref.startswith('http'))
-        
-        if response:
-            import re
+        if isinstance(response, list):
             for message in response:
+                if hasattr(message, 'tool_calls') and message.tool_calls:
+                    for tool_call in message.tool_calls:
+                        if tool_call['name'] in ['AnswerQuestion', 'ReviseAnswer']:
+                            refs = tool_call['args'].get('references', [])
+                            if isinstance(refs, list):
+                                references.extend(ref for ref in refs if ref and isinstance(ref, str) and ref.startswith('http'))
+                
                 if hasattr(message, 'content'):
                     content = str(message.content)
                     urls = re.findall(r'https?://[^\s<>"]+', content)
                     references.extend(urls)
-                    
+        elif isinstance(response, str):
+            urls = re.findall(r'https?://[^\s<>"]+', response)
+            references.extend(urls)
+        
     except Exception as e:
         print(f"Error extracting references: {e}")
     
@@ -215,7 +229,7 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
                 value = chunk_data.get('value', '')
                 
                 if op == 'add' and any(keyword in path for keyword in ['/streamed_output', '/llm', '/output']):
-                    content = str(value).strip()
+                    content = str(value).strip() if not isinstance(value, Exception) else f"Error: {str(value)}"
                     
                     if content and len(content) > 20 and not content.startswith('{'):
                         path_parts = path.split('/')
@@ -296,16 +310,25 @@ async def _run_analysis(case_description: str) -> dict:
                         final_response = chunk.value.get('final_output')
                     elif isinstance(chunk.value, list):
                         final_response = chunk.value
+                    elif isinstance(chunk.value, Exception):
+                        final_response = str(chunk.value)
             except Exception as e:
                 print(f"Error capturing final response from chunk: {e}")
                 
         if not final_response:
             print("Using fallback invoke method")
-            final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
+            try:
+                final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
+            except Exception as e:
+                print(f"Fallback invoke failed: {str(e)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Analysis failed: {str(e)}"
+                )
 
+    except HTTPException:
+        raise
     except Exception as e:
-        # Final, definitive fix: raise an HTTPException directly
-        # This completely avoids any string conversion of the problematic exception object
         print(f"Critical error during LangGraph execution: {e}")
         traceback.print_exc()
         raise HTTPException(
@@ -328,6 +351,8 @@ async def _run_analysis(case_description: str) -> dict:
                 final_answer = str(last_message.content)
             elif isinstance(last_message, str):
                 final_answer = last_message
+            elif isinstance(last_message, Exception):
+                final_answer = f"Error in analysis: {str(last_message)}"
     except Exception as e:
         print(f"Error extracting final answer: {e}")
     
@@ -358,12 +383,12 @@ async def _run_analysis(case_description: str) -> dict:
 
 # --- API ENDPOINTS ---
 
-@app.get("/")
+@app.get("/", response_description="API information")
 async def home():
     """Root endpoint - API information"""
     return {
         "message": "Legal Advisor AI Agent API",
-        "version": "1.3.3",
+        "version": "1.3.4",
         "endpoints": {
             "analyze_case_post": "POST /analyze-case",
             "analyze_case_get": "GET /analyze-case?case_description=...",
@@ -374,51 +399,35 @@ async def home():
         "documentation": "/docs"
     }
 
-@app.get("/api/health")
+@app.get("/api/health", response_description="Health check")
 async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Legal Advisor AI Agent API",
-        "version": "1.3.3"
+        "version": "1.3.4"
     }
 
-@app.post("/analyze-case", response_model=UnifiedAnalysisResponse)
+@app.post("/analyze-case", response_model=UnifiedAnalysisResponse, response_description="Analyze a legal case (POST)")
 async def analyze_legal_case_post(request: LegalCaseRequest):
     """Main analysis endpoint - POST method with full response"""
-    try:
-        if not request.case_description or len(request.case_description.strip()) < 50:
-            raise HTTPException(status_code=400, detail="Case description must be at least 50 characters long")
-        
-        result = await _run_analysis(request.case_description)
-        return UnifiedAnalysisResponse(**result)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Analysis error: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Analysis failed: An internal server error occurred.")
+    if not request.case_description or len(request.case_description.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Case description must be at least 50 characters long")
+    
+    result = await _run_analysis(request.case_description)
+    return UnifiedAnalysisResponse(**result)
 
-@app.get("/analyze-case", response_model=UnifiedAnalysisResponse)
+@app.get("/analyze-case", response_model=UnifiedAnalysisResponse, response_description="Analyze a legal case (GET)")
 async def analyze_legal_case_get(case_description: str):
     """Analysis endpoint - GET method for simple queries"""
-    try:
-        if not case_description or len(case_description.strip()) < 50:
-            raise HTTPException(status_code=400, detail="Case description must be at least 50 characters long")
-        
-        result = await _run_analysis(case_description)
-        return UnifiedAnalysisResponse(**result)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Analysis error: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Analysis failed: An internal server error occurred.")
+    if not case_description or len(case_description.strip()) < 50:
+        raise HTTPException(status_code=400, detail="Case description must be at least 50 characters long")
+    
+    result = await _run_analysis(case_description)
+    return UnifiedAnalysisResponse(**result)
 
-@app.post("/analyze-case-stream")
+@app.post("/analyze-case-stream", response_description="Stream legal case analysis")
 async def analyze_legal_case_stream(request: LegalCaseRequest):
     """Streaming analysis endpoint - Real-time thinking process via Server-Sent Events"""
     
@@ -464,7 +473,7 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                     value = chunk_data.get('value', '')
                     
                     if op == 'add' and any(keyword in path for keyword in ['/streamed_output', '/llm', '/output']):
-                        content = str(value).strip()
+                        content = str(value).strip() if not isinstance(value, Exception) else f"Error: {str(value)}"
                         
                         if content and len(content) > 20:
                             path_parts = path.split('/')
