@@ -12,6 +12,10 @@ tavily_tool = TavilySearch(
     # Additional parameters for better search results
     search_depth="advanced",
    # time_range="none"
+    include_answer="advanced",
+    include_raw_content="text",
+    country="india",
+    include_domains=["https://indiankanoon.org/","https://www.indiacode.nic.in/",""]
 )
 
 def safe_json_serialize(obj):
