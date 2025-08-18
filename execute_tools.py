@@ -11,7 +11,7 @@ tavily_tool = TavilySearch(
     topic="news",
     # Additional parameters for better search results
     search_depth="advanced",
-    time_range="none"
+   # time_range="none"
 )
 
 def safe_json_serialize(obj):
