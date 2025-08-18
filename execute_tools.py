@@ -3,7 +3,6 @@ from typing import List, Dict, Any
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage, HumanMessage
 from langchain_tavily import TavilySearch
 from dotenv import load_dotenv
-
 load_dotenv()
 
 # Configure TavilySearch with proper parameters based on documentation
@@ -14,6 +13,32 @@ tavily_tool = TavilySearch(
     search_depth="advanced",
     time_range="week"
 )
+
+def safe_json_serialize(obj):
+    """Safely serialize objects to JSON, handling exceptions and non-serializable objects"""
+    try:
+        # Test if the object is JSON serializable
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError, AttributeError) as e:
+        # If it's an exception object or non-serializable, convert to safe format
+        if isinstance(obj, Exception):
+            return {
+                "error": True,
+                "error_type": obj.__class__.__name__,
+                "error_message": str(obj)
+            }
+        elif hasattr(obj, '__dict__'):
+            try:
+                # Try to convert object attributes to dictionary
+                safe_dict = {}
+                for key, value in obj.__dict__.items():
+                    safe_dict[key] = safe_json_serialize(value)
+                return safe_dict
+            except:
+                return {"error": True, "message": str(obj)}
+        else:
+            return {"error": True, "message": str(obj)}
 
 # Function to execute search queries from AnswerQuestion tool calls
 def execute_tools(state: List[BaseMessage]) -> List[BaseMessage]:
@@ -35,15 +60,37 @@ def execute_tools(state: List[BaseMessage]) -> List[BaseMessage]:
             query_results = {}
             for query in search_queries:
                 try:
+                    print(f"Executing search query: {query}")  # Debug logging
                     result = tavily_tool.invoke(query)
-                    query_results[query] = result
+                    
+                    # Ensure result is JSON serializable
+                    safe_result = safe_json_serialize(result)
+                    query_results[query] = safe_result
+                    
                 except Exception as e:
-                    query_results[query] = {"error": f"Search failed: {str(e)}"}
+                    print(f"Search failed for query '{query}': {str(e)}")  # Debug logging
+                    query_results[query] = {
+                        "error": True,
+                        "error_type": e.__class__.__name__,
+                        "error_message": str(e)
+                    }
+            
+            try:
+                # Safely serialize the entire query_results
+                content = json.dumps(safe_json_serialize(query_results))
+            except Exception as e:
+                # Fallback if even safe serialization fails
+                print(f"Failed to serialize query results: {str(e)}")
+                content = json.dumps({
+                    "error": True,
+                    "message": "Failed to serialize search results",
+                    "queries": list(search_queries)
+                })
             
             # Create a tool message with the results
             tool_messages.append(
                 ToolMessage(
-                    content=json.dumps(query_results),
+                    content=content,
                     tool_call_id=call_id
                 )
             )
