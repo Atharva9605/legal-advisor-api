@@ -116,8 +116,7 @@ revise_instructions = """Revise your previous answer using the new information.
             - [1] https://example.com
             - [2] https://example.com
     - You should explain the citation that you are searching similar to the case and give provide the Direct link to download the particular citation.
-    - You should use the previous critique to remove superfluous information from your answer and make SURE it is not more than 250 words.
-"""
+    - You should use the previous critique to remove superfluous information from your answer and show the refrence link as well with summary of link
 
 revisor_chain = actor_prompt_template.partial(
     first_instruction=revise_instructions
