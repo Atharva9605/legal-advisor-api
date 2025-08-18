@@ -101,7 +101,7 @@ first_responder_prompt_template = actor_prompt_template.partial(
     "from that."
 )
 
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
+llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash-lite")
 
 first_responder_chain = first_responder_prompt_template | llm.bind_tools(tools=[AnswerQuestion], tool_choice='AnswerQuestion') 
 
