@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import asyncio
@@ -12,6 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+import traceback
 
 # Load environment variables
 load_dotenv()
@@ -20,7 +21,7 @@ load_dotenv()
 app = FastAPI(
     title="Legal Advisor AI Agent API",
     description="AI-powered legal analysis with step-by-step thinking and link summaries",
-    version="1.3.0"
+    version="1.3.1" # Updated version to reflect changes
 )
 
 # Add CORS middleware
@@ -103,12 +104,11 @@ def extract_references(response) -> List[str]:
                 if isinstance(refs, list):
                     references.extend(ref for ref in refs if ref and isinstance(ref, str) and ref.startswith('http'))
         
-        # Also check content for URLs
         if response:
+            import re
             for message in response:
                 if hasattr(message, 'content'):
                     content = str(message.content)
-                    import re
                     urls = re.findall(r'https?://[^\s<>"]+', content)
                     references.extend(urls)
                     
@@ -125,23 +125,23 @@ def generate_html_from_analysis(analysis_text: str) -> str:
         Convert the following legal analysis text into a well-formatted HTML document with inline CSS. Requirements:
         
         1. Create a professional document structure with:
-           - Header with title "Legal Analysis Report"
-           - Table of contents with anchor links
-           - Main content sections
-           - Footer with disclaimer
+            - Header with title "Legal Analysis Report"
+            - Table of contents with anchor links
+            - Main content sections
+            - Footer with disclaimer
         
         2. Use proper HTML structure:
-           - <h2> for main sections (Executive Summary, Legal Framework, Analysis, etc.)
-           - <h3> for subsections
-           - <p> for paragraphs with proper spacing
-           - <ul>/<ol> for lists
-           - <strong> for important terms
+            - <h2> for main sections (Executive Summary, Legal Framework, Analysis, etc.)
+            - <h3> for subsections
+            - <p> for paragraphs with proper spacing
+            - <ul>/<ol> for lists
+            - <strong> for important terms
         
         3. Styling requirements:
-           - Professional color scheme (navy blue headers, clean layout)
-           - Proper spacing and margins
-           - Readable fonts and line height
-           - Professional legal document appearance
+            - Professional color scheme (navy blue headers, clean layout)
+            - Proper spacing and margins
+            - Readable fonts and line height
+            - Professional legal document appearance
         
         4. Convert all URLs to clickable links: <a href="URL" target="_blank">URL</a>
         
@@ -156,7 +156,6 @@ def generate_html_from_analysis(analysis_text: str) -> str:
         response = gemini_llm.invoke([HumanMessage(content=prompt)])
         html_content = response.content.strip()
         
-        # Clean up the response to ensure it's proper HTML
         if not html_content.startswith('<'):
             html_content = f'<div style="padding: 20px; font-family: Arial, sans-serif;">{html_content}</div>'
         
@@ -164,7 +163,6 @@ def generate_html_from_analysis(analysis_text: str) -> str:
         
     except Exception as e:
         print(f"Error generating HTML: {e}")
-        # Return a basic HTML version
         return f'''
         <div style="padding: 20px; font-family: Arial, sans-serif; line-height: 1.6;">
             <h1 style="color: #1e3a8a; border-bottom: 2px solid #fbbf24; padding-bottom: 10px;">Legal Analysis Report</h1>
@@ -199,7 +197,6 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
         
         for chunk in log_chunks:
             try:
-                # Handle different chunk types
                 chunk_data = {}
                 
                 if hasattr(chunk, 'op') and hasattr(chunk, 'path') and hasattr(chunk, 'value'):
@@ -217,14 +214,12 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
                 path = str(chunk_data.get('path', ''))
                 value = chunk_data.get('value', '')
                 
-                # Look for streamed output or LLM responses
                 if op == 'add' and any(keyword in path for keyword in ['/streamed_output', '/llm', '/output']):
                     content = str(value).strip()
                     
                     if content and len(content) > 20 and not content.startswith('{'):
-                        # Try to identify the node/step type
                         path_parts = path.split('/')
-                        node_name = "analyze"  # default
+                        node_name = "analyze"
                         
                         for part in path_parts:
                             if ':' in part:
@@ -234,7 +229,6 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
                                     break
                         
                         if node_name != current_node and accumulated_content:
-                            # Save previous step
                             step_name, description = node_map.get(current_node, (f"Legal Step {current_node}", "Processing legal analysis"))
                             steps.append(ThinkingStep(
                                 step_number=step_counter,
@@ -253,7 +247,6 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
                 print(f"Error processing individual chunk: {chunk_error}")
                 continue
         
-        # Add final accumulated step
         if current_node and accumulated_content:
             step_name, description = node_map.get(current_node, ("Final Analysis", "Completing legal analysis"))
             steps.append(ThinkingStep(
@@ -267,42 +260,20 @@ def extract_thinking_steps_from_log(log_chunks) -> List[ThinkingStep]:
     except Exception as e:
         print(f"Error extracting thinking steps: {e}")
     
-    # Provide meaningful default steps if extraction fails
     if not steps:
         steps = [
             ThinkingStep(
                 step_number=1,
                 step_name="🧠 Case Analysis Initiated",
                 description="Beginning comprehensive legal analysis of the submitted case",
-                details="Parsing case description, identifying parties, key facts, potential legal issues, and applicable areas of law. Determining the scope and complexity of the legal matter.",
+                details="The system is processing your case description to identify key legal issues and applicable areas of law.",
                 timestamp=datetime.now().isoformat()
             ),
             ThinkingStep(
                 step_number=2,
-                step_name="⚖️ Legal Framework Assessment",
-                description="Evaluating applicable laws, regulations, and legal principles",
-                details="Identifying relevant statutes, regulations, case law, and legal doctrines that apply to this matter. Analyzing jurisdictional issues and procedural requirements.",
-                timestamp=datetime.now().isoformat()
-            ),
-            ThinkingStep(
-                step_number=3,
-                step_name="🔍 Research and Precedent Analysis",
-                description="Conducting comprehensive legal research for supporting authorities",
-                details="Searching legal databases for relevant case law, statutory provisions, regulatory guidance, and scholarly commentary. Analyzing precedents and their applicability to the current case.",
-                timestamp=datetime.now().isoformat()
-            ),
-            ThinkingStep(
-                step_number=4,
-                step_name="📋 Comprehensive Legal Analysis",
-                description="Synthesizing research findings with case facts",
-                details="Applying legal principles to case facts, analyzing strengths and weaknesses, identifying potential defenses or counterarguments, and formulating legal strategy recommendations.",
-                timestamp=datetime.now().isoformat()
-            ),
-            ThinkingStep(
-                step_number=5,
                 step_name="✅ Final Opinion and Recommendations",
                 description="Finalizing legal assessment and strategic recommendations",
-                details="Preparing comprehensive legal opinion with clear conclusions, risk assessment, recommended actions, and next steps for the client.",
+                details="Preparing a comprehensive legal opinion with clear conclusions and recommended actions.",
                 timestamp=datetime.now().isoformat()
             )
         ]
@@ -317,86 +288,59 @@ async def _run_analysis(case_description: str) -> dict:
     final_response = None
     
     try:
-        # Collect all log chunks for detailed analysis
         async for chunk in langraph_app.astream_log([HumanMessage(content=case_description)], include_types=["llm"]):
             log_chunks.append(chunk)
-            
-            # Try to get final response from stream
             try:
-                if hasattr(chunk, 'op') and chunk.op == 'replace' and hasattr(chunk, 'path') and chunk.path == '':
-                    if hasattr(chunk, 'value'):
-                        if hasattr(chunk.value, 'get'):
-                            final_response = chunk.value.get('final_output')
-                        elif isinstance(chunk.value, list):
-                            final_response = chunk.value
-            except:
-                continue
-        
-        # Fallback if streaming didn't capture final response
+                # Capture final response from the stream
+                if hasattr(chunk, 'op') and chunk.op == 'replace' and chunk.path == '':
+                    if hasattr(chunk.value, 'get'):
+                        final_response = chunk.value.get('final_output')
+                    elif isinstance(chunk.value, list):
+                        final_response = chunk.value
+            except Exception as e:
+                # Log any errors in processing chunks but don't stop the stream
+                print(f"Error capturing final response from chunk: {e}")
+                
+        # Fallback if streaming didn't capture the final response
         if not final_response:
             print("Using fallback invoke method")
             final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
-        
+
     except Exception as e:
-        print(f"Error during langraph execution: {e}")
-        # Complete fallback
-        try:
-            final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
-            log_chunks = []
-        except Exception as fallback_error:
-            print(f"Fallback also failed: {fallback_error}")
-            raise HTTPException(status_code=500, detail="Analysis system is currently unavailable")
+        # Catch any failure from astream_log or ainvoke and raise a standard error
+        print(f"Critical error during LangGraph execution: {e}")
+        traceback.print_exc()
+        raise RuntimeError(f"Analysis failed: {str(e)}")
     
-    # Extract thinking steps with enhanced detail
+    # Extract thinking steps, references, and final answer from the captured data
     thinking_steps = extract_thinking_steps_from_log(log_chunks)
-    
-    # Extract references more robustly
     references = extract_references(final_response)
     
-    # Extract final answer with multiple fallback methods
-    final_answer = "Analysis completed successfully."
+    final_answer = "Analysis completed. The system has processed your case and identified relevant legal issues, applicable laws, and potential courses of action."
     try:
         if final_response:
-            if isinstance(final_response, list) and len(final_response) > 0:
-                last_message = final_response[-1]
-                
-                # Method 1: Check for tool calls
-                if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
-                    tool_call = last_message.tool_calls[0]
-                    if isinstance(tool_call, dict):
-                        final_answer = tool_call.get("args", {}).get("answer", final_answer)
-                    else:
-                        final_answer = getattr(tool_call, 'args', {}).get("answer", final_answer)
-                
-                # Method 2: Check for content
-                elif hasattr(last_message, 'content') and last_message.content:
-                    final_answer = str(last_message.content)
-                
-                # Method 3: Check if it's a string directly
-                elif isinstance(last_message, str):
-                    final_answer = last_message
-            
-            elif isinstance(final_response, str):
-                final_answer = final_response
-                
+            last_message = final_response[-1] if isinstance(final_response, list) and final_response else final_response
+            if hasattr(last_message, 'tool_calls') and last_message.tool_calls:
+                tool_call = last_message.tool_calls[0]
+                final_answer = tool_call.get("args", {}).get("answer", str(last_message.content) if hasattr(last_message, 'content') else final_answer)
+            elif hasattr(last_message, 'content') and last_message.content:
+                final_answer = str(last_message.content)
+            elif isinstance(last_message, str):
+                final_answer = last_message
     except Exception as e:
         print(f"Error extracting final answer: {e}")
-        final_answer = "Legal analysis has been completed. The system has processed your case and identified relevant legal issues, applicable laws, and potential courses of action."
     
-    # Generate formatted HTML analysis
     formatted_analysis = generate_html_from_analysis(final_answer)
     
-    # Get link summaries asynchronously
     link_summaries = []
     if references:
         try:
-            tasks = [get_link_summary(ref) for ref in references[:5]]  # Limit to 5 links to avoid timeouts
+            tasks = [get_link_summary(ref) for ref in references[:5]]
             summaries = await asyncio.gather(*tasks, return_exceptions=True)
             link_summaries = [s for s in summaries if isinstance(s, LinkSummary)]
         except Exception as e:
             print(f"Error getting link summaries: {e}")
     
-    successful_references = [s.url for s in link_summaries if s.status == "success"]
     processing_time = (datetime.now() - start_time).total_seconds()
     
     return {
@@ -405,7 +349,7 @@ async def _run_analysis(case_description: str) -> dict:
         "thinking_steps": thinking_steps,
         "final_answer": final_answer,
         "formatted_analysis": formatted_analysis,
-        "references": references,  # Return all references, not just successful ones
+        "references": references,
         "link_summaries": link_summaries,
         "total_steps": len(thinking_steps),
         "processing_time": processing_time
@@ -418,7 +362,7 @@ async def home():
     """Root endpoint - API information"""
     return {
         "message": "Legal Advisor AI Agent API",
-        "version": "1.3.0",
+        "version": "1.3.1",
         "endpoints": {
             "analyze_case_post": "POST /analyze-case",
             "analyze_case_get": "GET /analyze-case?case_description=...",
@@ -433,10 +377,10 @@ async def home():
 async def health_check():
     """Health check endpoint"""
     return {
-        "status": "healthy", 
+        "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Legal Advisor AI Agent API",
-        "version": "1.3.0"
+        "version": "1.3.1"
     }
 
 @app.post("/analyze-case", response_model=UnifiedAnalysisResponse)
@@ -453,7 +397,6 @@ async def analyze_legal_case_post(request: LegalCaseRequest):
         raise
     except Exception as e:
         print(f"Analysis error: {e}")
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
@@ -471,7 +414,6 @@ async def analyze_legal_case_get(case_description: str):
         raise
     except Exception as e:
         print(f"Analysis error: {e}")
-        import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
@@ -481,7 +423,6 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
     
     async def generate_thinking_stream():
         try:
-            # Validate input
             if not request.case_description or len(request.case_description.strip()) < 50:
                 yield f"data: {json.dumps({'type': 'error', 'message': 'Case description must be at least 50 characters long'})}\n\n"
                 return
@@ -525,7 +466,6 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                         content = str(value).strip()
                         
                         if content and len(content) > 20:
-                            # Determine node type
                             path_parts = path.split('/')
                             node_name = "analyze"
                             
@@ -537,7 +477,6 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                                         break
                             
                             if node_name != current_node:
-                                # Send previous step completion
                                 if current_node and accumulated_content:
                                     prev_step_name, prev_description = node_map.get(current_node, (f"Step {current_node}", "Processing..."))
                                     step_data = {
@@ -551,7 +490,6 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                                     yield f"data: {json.dumps(step_data)}\n\n"
                                     step_counter += 1
                                 
-                                # Start new step
                                 current_node = node_name
                                 accumulated_content = content
                                 
@@ -565,10 +503,9 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                                 }
                                 yield f"data: {json.dumps(start_data)}\n\n"
                             else:
-                                # Accumulate content and send thinking updates
                                 accumulated_content += "\n" + content
                                 
-                                if len(content) > 50:  # Send substantial thinking updates
+                                if len(content) > 50:
                                     update_data = {
                                         'type': 'thinking_update',
                                         'content': content[:600] + "..." if len(content) > 600 else content,
@@ -580,7 +517,6 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
                     print(f"Error processing stream chunk: {chunk_error}")
                     continue
             
-            # Send final step
             if current_node and accumulated_content:
                 final_step_name, final_description = node_map.get(current_node, ("Final Analysis", "Completing analysis..."))
                 final_step_data = {
@@ -597,10 +533,9 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
             
         except Exception as e:
             print(f"Streaming error: {e}")
-            import traceback
             traceback.print_exc()
             error_data = {
-                'type': 'error', 
+                'type': 'error',
                 'message': f'Analysis error: {str(e)}',
                 'timestamp': datetime.now().isoformat()
             }
@@ -614,7 +549,7 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "*",
-            "X-Accel-Buffering": "no"  # Disable nginx buffering for real-time streaming
+            "X-Accel-Buffering": "no"
         }
     )
 
