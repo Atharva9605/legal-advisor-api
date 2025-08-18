@@ -21,7 +21,7 @@ load_dotenv()
 app = FastAPI(
     title="Legal Advisor AI Agent API",
     description="AI-powered legal analysis with step-by-step thinking and link summaries",
-    version="1.3.1" # Updated version to reflect changes
+    version="1.3.2"  # Updated version to reflect stability improvements
 )
 
 # Add CORS middleware
@@ -291,26 +291,24 @@ async def _run_analysis(case_description: str) -> dict:
         async for chunk in langraph_app.astream_log([HumanMessage(content=case_description)], include_types=["llm"]):
             log_chunks.append(chunk)
             try:
-                # Capture final response from the stream
                 if hasattr(chunk, 'op') and chunk.op == 'replace' and chunk.path == '':
                     if hasattr(chunk.value, 'get'):
                         final_response = chunk.value.get('final_output')
                     elif isinstance(chunk.value, list):
                         final_response = chunk.value
             except Exception as e:
-                # Log any errors in processing chunks but don't stop the stream
                 print(f"Error capturing final response from chunk: {e}")
                 
-        # Fallback if streaming didn't capture the final response
         if not final_response:
             print("Using fallback invoke method")
             final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
 
     except Exception as e:
-        # Catch any failure from astream_log or ainvoke and raise a standard error
+        # The key change: raise a RuntimeError with a safe, non-object-based message
+        error_message = "Analysis failed due to an internal processing error."
         print(f"Critical error during LangGraph execution: {e}")
         traceback.print_exc()
-        raise RuntimeError(f"Analysis failed: {str(e)}")
+        raise RuntimeError(error_message)
     
     # Extract thinking steps, references, and final answer from the captured data
     thinking_steps = extract_thinking_steps_from_log(log_chunks)
@@ -362,7 +360,7 @@ async def home():
     """Root endpoint - API information"""
     return {
         "message": "Legal Advisor AI Agent API",
-        "version": "1.3.1",
+        "version": "1.3.2",
         "endpoints": {
             "analyze_case_post": "POST /analyze-case",
             "analyze_case_get": "GET /analyze-case?case_description=...",
@@ -380,7 +378,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Legal Advisor AI Agent API",
-        "version": "1.3.1"
+        "version": "1.3.2"
     }
 
 @app.post("/analyze-case", response_model=UnifiedAnalysisResponse)
