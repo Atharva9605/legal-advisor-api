@@ -21,7 +21,7 @@ load_dotenv()
 app = FastAPI(
     title="Legal Advisor AI Agent API",
     description="AI-powered legal analysis with step-by-step thinking and link summaries",
-    version="1.3.2"  # Updated version to reflect stability improvements
+    version="1.3.3"  # Updated version to reflect stability improvements
 )
 
 # Add CORS middleware
@@ -304,11 +304,14 @@ async def _run_analysis(case_description: str) -> dict:
             final_response = await langraph_app.ainvoke([HumanMessage(content=case_description)])
 
     except Exception as e:
-        # The key change: raise a RuntimeError with a safe, non-object-based message
-        error_message = "Analysis failed due to an internal processing error."
+        # Final, definitive fix: raise an HTTPException directly
+        # This completely avoids any string conversion of the problematic exception object
         print(f"Critical error during LangGraph execution: {e}")
         traceback.print_exc()
-        raise RuntimeError(error_message)
+        raise HTTPException(
+            status_code=500, 
+            detail="An internal error occurred during the analysis. Please try again later."
+        )
     
     # Extract thinking steps, references, and final answer from the captured data
     thinking_steps = extract_thinking_steps_from_log(log_chunks)
@@ -360,7 +363,7 @@ async def home():
     """Root endpoint - API information"""
     return {
         "message": "Legal Advisor AI Agent API",
-        "version": "1.3.2",
+        "version": "1.3.3",
         "endpoints": {
             "analyze_case_post": "POST /analyze-case",
             "analyze_case_get": "GET /analyze-case?case_description=...",
@@ -378,7 +381,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Legal Advisor AI Agent API",
-        "version": "1.3.2"
+        "version": "1.3.3"
     }
 
 @app.post("/analyze-case", response_model=UnifiedAnalysisResponse)
@@ -396,7 +399,7 @@ async def analyze_legal_case_post(request: LegalCaseRequest):
     except Exception as e:
         print(f"Analysis error: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: An internal server error occurred.")
 
 @app.get("/analyze-case", response_model=UnifiedAnalysisResponse)
 async def analyze_legal_case_get(case_description: str):
@@ -413,7 +416,7 @@ async def analyze_legal_case_get(case_description: str):
     except Exception as e:
         print(f"Analysis error: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Analysis failed: An internal server error occurred.")
 
 @app.post("/analyze-case-stream")
 async def analyze_legal_case_stream(request: LegalCaseRequest):
@@ -534,7 +537,7 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
             traceback.print_exc()
             error_data = {
                 'type': 'error',
-                'message': f'Analysis error: {str(e)}',
+                'message': f'Analysis error: An internal server error occurred.',
                 'timestamp': datetime.now().isoformat()
             }
             yield f"data: {json.dumps(error_data)}\n\n"
