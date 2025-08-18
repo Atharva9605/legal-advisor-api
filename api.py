@@ -673,6 +673,16 @@ async def analyze_legal_case_stream(request: LegalCaseRequest):
         }
     )
 
+@app.get("/analyze-case-stream", response_description="Stream legal case analysis (GET)")
+async def analyze_legal_case_stream_get(case_description: str):
+    """GET version of streaming analysis endpoint for EventSource compatibility"""
+    
+    # Create a request object for the existing streaming logic
+    request = LegalCaseRequest(case_description=case_description)
+    
+    # Use the same streaming logic as POST endpoint
+    return await analyze_legal_case_stream(request)
+
 @app.get("/search-progress", response_description="Get current search progress")
 async def get_current_search_progress():
     """Get the current search progress for debugging"""
