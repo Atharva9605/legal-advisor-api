@@ -8,7 +8,7 @@ load_dotenv()
 # Configure TavilySearch with proper parameters based on documentation
 tavily_tool = TavilySearch(
     max_results=5,
-    topic="general",
+    topic="news",
     # Additional parameters for better search results
     search_depth="advanced",
     time_range="week"
